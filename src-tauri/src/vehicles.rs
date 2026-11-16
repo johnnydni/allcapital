@@ -13,6 +13,8 @@ const MAX_TEXT: usize = 60;
 const MAX_EQUIPMENT: usize = 20;
 const MAX_CENTS: i64 = 1_000_000_000_000; // 10 billion €
 pub const MAX_VEHICLES: usize = 200;
+pub const MAX_JOURNAL_ENTRIES: usize = 5000;
+const MAX_NOTE: usize = 200;
 const CLASSIC_AGE: u16 = 30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +75,85 @@ pub struct ValuePoint {
     pub source: ValueSource,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JournalCategory {
+    Steuer,
+    Versicherung,
+    Kraftstoff,
+    Sonstiges,
+    Werkstatt,
+    Teile,
+    Fahrt,
+}
+
+/// One line in a vehicle's journal: a cost, a workshop visit or a trip.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JournalDraft {
+    /// Calendar date, `YYYY-MM-DD`.
+    pub date: String,
+    pub category: JournalCategory,
+    pub amount_cents: Option<i64>,
+    pub km: Option<u32>,
+    pub note: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalEntry {
+    pub id: String,
+    #[serde(flatten)]
+    pub draft: JournalDraft,
+}
+
+/// Accepts only real calendar dates between 1900 and 2200.
+pub fn check_date(raw: &str) -> Result<String, String> {
+    let err = || "Das Datum ist ungültig.".to_string();
+    let parts: Vec<&str> = raw.split('-').collect();
+    let [y, m, d] = parts.as_slice() else { return Err(err()) };
+    if y.len() != 4 || m.len() != 2 || d.len() != 2 || !raw.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+        return Err(err());
+    }
+    let (y, m, d): (u32, u32, u32) = (y.parse().map_err(|_| err())?, m.parse().map_err(|_| err())?, d.parse().map_err(|_| err())?);
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days = match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return Err(err()),
+    };
+    if !(1900..=2200).contains(&y) || d == 0 || d > days {
+        return Err(err());
+    }
+    Ok(raw.to_string())
+}
+
+impl JournalDraft {
+    pub fn validated(mut self) -> Result<Self, String> {
+        self.date = check_date(&self.date)?;
+        self.note = self.note.trim().to_string();
+        if self.note.chars().count() > MAX_NOTE || self.note.chars().any(char::is_control) {
+            return Err("Die Notiz ist ungültig.".into());
+        }
+        if self.amount_cents.is_some_and(|c| !(0..=MAX_CENTS).contains(&c)) {
+            return Err("Der Betrag ist ungültig.".into());
+        }
+        if self.km.is_some_and(|km| km > 5_000_000) {
+            return Err("Die Kilometerangabe ist ungültig.".into());
+        }
+        let trip = self.category == JournalCategory::Fahrt;
+        if trip && self.km.unwrap_or(0) == 0 {
+            return Err("Bitte gib die gefahrenen Kilometer an.".into());
+        }
+        if !trip && self.amount_cents.is_none() {
+            return Err("Bitte gib einen Betrag an.".into());
+        }
+        Ok(self)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Vehicle {
@@ -81,6 +162,11 @@ pub struct Vehicle {
     pub draft: VehicleDraft,
     pub created_at: u64,
     pub history: Vec<ValuePoint>,
+    #[serde(default)]
+    pub journal: Vec<JournalEntry>,
+    /// Date of the next planned workshop visit, `YYYY-MM-DD`.
+    #[serde(default)]
+    pub next_service: Option<String>,
 }
 
 /// What the UI receives: the stored vehicle plus derived figures.
@@ -303,7 +389,7 @@ pub mod tests {
     }
 
     pub fn sample_vehicle() -> Vehicle {
-        Vehicle { id: "v1".into(), draft: draft(), created_at: 0, history: vec![] }
+        Vehicle { id: "v1".into(), draft: draft(), created_at: 0, history: vec![], journal: vec![], next_service: None }
     }
 
     #[test]
@@ -386,6 +472,38 @@ pub mod tests {
         let m = monthly_depreciation(&draft(), 2026).unwrap();
         let value = estimate(&draft(), 2026).unwrap().mid_cents;
         assert!(m > 0 && m < value / 50, "{m}");
+    }
+
+    #[test]
+    fn dates_must_exist() {
+        for ok in ["2026-11-16", "2024-02-29", "1900-01-01"] {
+            assert!(check_date(ok).is_ok(), "{ok}");
+        }
+        for bad in ["2026-02-30", "2025-02-29", "2026-13-01", "2026-00-10", "2026-1-1", "16.11.2026", "", "2026-11-16T10:00", "+026-11-16", "1899-12-31"] {
+            assert!(check_date(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn journal_entries_are_validated() {
+        let entry = |category, amount_cents, km| JournalDraft { date: "2026-03-01".into(), category, amount_cents, km, note: " TÜV ".into() };
+        assert_eq!(entry(JournalCategory::Werkstatt, Some(12_000), None).validated().unwrap().note, "TÜV");
+        assert!(entry(JournalCategory::Fahrt, None, Some(320)).validated().is_ok());
+        assert!(entry(JournalCategory::Fahrt, None, None).validated().is_err(), "a trip needs km");
+        assert!(entry(JournalCategory::Steuer, None, None).validated().is_err(), "a cost needs an amount");
+        assert!(entry(JournalCategory::Steuer, Some(-1), None).validated().is_err());
+        let mut long = entry(JournalCategory::Teile, Some(1), None);
+        long.note = "x".repeat(201);
+        assert!(long.validated().is_err());
+    }
+
+    #[test]
+    fn older_vault_data_without_journal_still_loads() {
+        let json = serde_json::to_string(&sample_vehicle()).unwrap();
+        let stripped = json.replace(",\"journal\":[]", "").replace(",\"nextService\":null", "");
+        assert_ne!(json, stripped);
+        let v: Vehicle = serde_json::from_str(&stripped).unwrap();
+        assert!(v.journal.is_empty() && v.next_service.is_none());
     }
 
     #[test]

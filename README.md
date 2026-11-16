@@ -10,6 +10,14 @@ npm run tauri dev      # App starten (benötigt Rust und Xcode Command Line Tool
 npm run dev            # nur die Oberfläche im Browser, mit flüchtigen Vorschau-Daten
 ```
 
+## Web-Vorschau (GitHub Pages)
+
+```bash
+npm run build:preview
+```
+
+Baut nur die Oberfläche mit flüchtigen Beispieldaten nach `dist-preview`. Der Workflow `.github/workflows/pages.yml` veröffentlicht sie auf GitHub Pages. Die Vorschau enthält kein Backend: keine Speicherung, keine Verschlüsselung, nur eine grobe Ersatz-Schätzung.
+
 ## Prüfen
 
 ```bash

@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { api, errorMessage, type Vehicle } from "../lib/api";
 import { formatCents, parseMoney } from "../lib/money";
-import { currentValue, valueChange } from "../lib/vehicles";
+import { currentValue, serviceText, valueChange } from "../lib/vehicles";
 import carIcon from "../assets/car-icon.png";
 import close from "../assets/close.png";
 import edit from "../assets/edit.png";
@@ -41,6 +41,7 @@ export function VehicleAsset(p: {
   onSelect: (id: string) => void;
   onChanged: (vehicle: Vehicle) => void;
   onDeleted: (id: string) => void;
+  onOpenJournal: () => void;
   onClose: () => void;
 }) {
   const [hover, setHover] = useState<string | null>(null);
@@ -91,9 +92,10 @@ export function VehicleAsset(p: {
           <button
             key={t.id}
             className={`va__tool va__tool--${t.id}`}
-            aria-disabled="true"
+            aria-disabled={t.id !== "journal"}
             aria-label={t.label || "Weitere Aktion"}
-            title="Noch nicht verfügbar"
+            title={t.id === "journal" ? undefined : "Noch nicht verfügbar"}
+            onClick={t.id === "journal" ? p.onOpenJournal : undefined}
             onMouseEnter={() => setHover(t.id)}
             onFocus={() => setHover(t.id)}
             onBlur={() => setHover(null)}
@@ -156,6 +158,13 @@ export function VehicleAsset(p: {
             - {formatCents(vehicle.monthlyDepreciationCents)}
           </p>
         </>
+      )}
+
+      {vehicle.nextService && (
+        <p className="va__service">
+          <b>Werkstatt-besuch {serviceText(vehicle.nextService).startsWith("über") ? "" : "in"}</b>
+          {serviceText(vehicle.nextService)}
+        </p>
       )}
 
       <p className="form-error va__error" role="alert">

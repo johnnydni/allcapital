@@ -31,6 +31,9 @@ pub fn run() {
             commands::add_vehicle,
             commands::set_vehicle_value,
             commands::delete_vehicle,
+            commands::add_journal_entry,
+            commands::delete_journal_entry,
+            commands::set_next_service,
         ])
         .run(tauri::generate_context!())
         .expect("error while running All Capital");

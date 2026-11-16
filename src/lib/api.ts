@@ -4,11 +4,13 @@
  * All secrets (passwords, hashes) are handled in Rust only. The UI passes a
  * password once per call and never stores it.
  *
- * Outside of Tauri (plain `vite dev` in a browser) a volatile in-memory mock
- * is used so screens can be reviewed. The mock is compiled out of production
- * builds.
+ * Outside of Tauri (plain `vite dev` in a browser, or the web preview build) a
+ * volatile in-memory mock is used so screens can be reviewed. The mock is
+ * compiled out of the desktop app.
  */
 import { invoke } from "@tauri-apps/api/core";
+
+declare const __PREVIEW__: boolean;
 
 export type Profile = {
   id: string;
@@ -83,12 +85,27 @@ export type VehicleDraft = {
   purchaseYear: number | null;
 };
 
+export type JournalCategory = "steuer" | "versicherung" | "kraftstoff" | "sonstiges" | "werkstatt" | "teile" | "fahrt";
+
+export type JournalDraft = {
+  /** YYYY-MM-DD */
+  date: string;
+  category: JournalCategory;
+  amountCents: number | null;
+  km: number | null;
+  note: string;
+};
+export type JournalEntry = JournalDraft & { id: string };
+
 export type ValuePoint = { at: number; cents: number; source: ValueSource };
 
 export type Vehicle = VehicleDraft & {
   id: string;
   createdAt: number;
   history: ValuePoint[];
+  journal: JournalEntry[];
+  /** YYYY-MM-DD */
+  nextService: string | null;
   monthlyDepreciationCents: number | null;
 };
 
@@ -101,6 +118,9 @@ export interface Api {
   addVehicle(draft: VehicleDraft, valueCents: number, source: ValueSource): Promise<Vehicle>;
   setVehicleValue(id: string, valueCents: number): Promise<Vehicle>;
   deleteVehicle(id: string): Promise<void>;
+  addJournalEntry(id: string, entry: JournalDraft): Promise<Vehicle>;
+  deleteJournalEntry(id: string, entryId: string): Promise<Vehicle>;
+  setNextService(id: string, date: string | null): Promise<Vehicle>;
   listProfiles(): Promise<Profile[]>;
   register(input: RegisterInput): Promise<Profile>;
   login(email: string, password: string): Promise<Profile>;
@@ -121,6 +141,9 @@ const tauriApi: Api = {
   addVehicle: (draft, valueCents, source) => invoke("add_vehicle", { draft, valueCents, source }),
   setVehicleValue: (id, valueCents) => invoke("set_vehicle_value", { id, valueCents }),
   deleteVehicle: (id) => invoke("delete_vehicle", { id }),
+  addJournalEntry: (id, entry) => invoke("add_journal_entry", { id, entry }),
+  deleteJournalEntry: (id, entryId) => invoke("delete_journal_entry", { id, entryId }),
+  setNextService: (id, date) => invoke("set_next_service", { id, date }),
 };
 
 /** Browser-only preview mock. Nothing is persisted. */
@@ -130,6 +153,13 @@ function createMockApi(): Api {
   let session: Row | null = null;
   let vehicles: Vehicle[] = [];
   const now = () => Math.floor(Date.now() / 1000);
+  const patch = (id: string, change: (v: Vehicle) => Vehicle): Vehicle => {
+    const v = vehicles.find((x) => x.id === id);
+    if (!v) throw "Fahrzeug nicht gefunden.";
+    const next = change(v);
+    vehicles = vehicles.map((x) => (x.id === id ? next : x));
+    return next;
+  };
   const pub = (r: Row): Profile => ({
     id: r.id,
     firstName: r.firstName,
@@ -205,17 +235,27 @@ function createMockApi(): Api {
         id: crypto.randomUUID(),
         createdAt: now(),
         history: [{ at: now(), cents: valueCents, source }],
+        journal: [],
+        nextService: null,
         monthlyDepreciationCents: draft.purchasePriceCents ? Math.round(valueCents * 0.008) : null,
       };
       vehicles = [...vehicles, v];
       return v;
     },
     async setVehicleValue(id, valueCents) {
-      const v = vehicles.find((x) => x.id === id);
-      if (!v) throw "Fahrzeug nicht gefunden.";
-      const next = { ...v, history: [...v.history, { at: now(), cents: valueCents, source: "manual" as const }] };
-      vehicles = vehicles.map((x) => (x.id === id ? next : x));
-      return next;
+      return patch(id, (v) => ({
+        ...v,
+        history: [...v.history, { at: now(), cents: valueCents, source: "manual" as const }],
+      }));
+    },
+    async addJournalEntry(id, entry) {
+      return patch(id, (v) => ({ ...v, journal: [...v.journal, { ...entry, id: crypto.randomUUID() }] }));
+    },
+    async deleteJournalEntry(id, entryId) {
+      return patch(id, (v) => ({ ...v, journal: v.journal.filter((e) => e.id !== entryId) }));
+    },
+    async setNextService(id, date) {
+      return patch(id, (v) => ({ ...v, nextService: date }));
     },
     async deleteVehicle(id) {
       vehicles = vehicles.filter((x) => x.id !== id);
@@ -224,9 +264,11 @@ function createMockApi(): Api {
 }
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+/** The mock exists in dev and in the explicit web preview build (`npm run build:preview`), never in the app. */
+const previewAllowed = import.meta.env.DEV || __PREVIEW__;
 
-export const isPreviewMock = !inTauri && import.meta.env.DEV;
-export const api: Api = inTauri || !import.meta.env.DEV ? tauriApi : createMockApi();
+export const isPreviewMock = previewAllowed && !inTauri;
+export const api: Api = previewAllowed && !inTauri ? createMockApi() : tauriApi;
 
 /** Normalises whatever a failed command rejects with into a display string. */
 export function errorMessage(e: unknown): string {

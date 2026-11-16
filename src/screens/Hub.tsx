@@ -5,6 +5,7 @@ import { totalValue } from "../lib/vehicles";
 import { Icon } from "../components/Icon";
 import { Wordmark } from "../components/Logo";
 import { VehicleAsset } from "./VehicleAsset";
+import { VehicleJournal } from "./VehicleJournal";
 import { VehicleWizard } from "./VehicleWizard";
 import logoMark from "../assets/logo-mark.png";
 import settings from "../assets/settings.png";
@@ -91,7 +92,7 @@ function useNow(): string {
   return stampFormat.format(now).replace(", ", " - ");
 }
 
-type Sub = { view: "grid" } | { view: "wizard" } | { view: "asset"; id: string };
+type Sub = { view: "grid" } | { view: "wizard" } | { view: "asset" | "journal"; id: string };
 
 /** Hub with the VALUE / FLOW grids, the vehicle wizard and the vehicle asset screen. */
 export function Hub(p: { name: string; demo: boolean; onBack: () => void }) {
@@ -116,6 +117,8 @@ export function Hub(p: { name: string; demo: boolean; onBack: () => void }) {
   const total = totalValue(vehicles);
   const add = { disabled: true, title: "Noch nicht verfügbar" } as const;
   const grid = { view: "grid" } as const;
+  const update = (v: Vehicle) => setVehicles((list) => list.map((x) => (x.id === v.id ? v : x)));
+  const journalVehicle = sub.view === "journal" ? vehicles.find((x) => x.id === sub.id) : undefined;
 
   return (
     <section className="screen">
@@ -142,11 +145,21 @@ export function Hub(p: { name: string; demo: boolean; onBack: () => void }) {
           id={sub.id}
           onSelect={(id) => setSub({ view: "asset", id })}
           onClose={() => setSub(grid)}
-          onChanged={(v) => setVehicles((list) => list.map((x) => (x.id === v.id ? v : x)))}
+          onOpenJournal={() => setSub({ view: "journal", id: sub.id })}
+          onChanged={update}
           onDeleted={(id) => {
             setVehicles((list) => list.filter((x) => x.id !== id));
             setSub(grid);
           }}
+        />
+      )}
+
+      {sub.view === "journal" && journalVehicle && (
+        <VehicleJournal
+          vehicle={journalVehicle}
+          onChanged={update}
+          onBack={() => setSub({ view: "asset", id: sub.id })}
+          onClose={() => setSub(grid)}
         />
       )}
 

@@ -4,7 +4,8 @@ use crate::profiles::{derive_key, Onboarding, ProfileStore, PublicProfile, Regis
 use crate::storage::{current_year, now_secs};
 use crate::vault::{Vault, VaultData, VaultKey};
 use crate::vehicles::{
-    check_value, estimate, EstimateResult, ValuePoint, ValueSource, Vehicle, VehicleDraft, VehicleView, MAX_VEHICLES,
+    check_date, check_value, estimate, EstimateResult, JournalDraft, JournalEntry, ValuePoint, ValueSource, Vehicle,
+    VehicleDraft, VehicleView, MAX_JOURNAL_ENTRIES, MAX_VEHICLES,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -176,6 +177,8 @@ pub fn add_vehicle(
         draft,
         created_at: now,
         history: vec![ValuePoint { at: now, cents, source }],
+        journal: vec![],
+        next_service: None,
     };
     state.with_vault(|data| {
         if data.vehicles.len() >= MAX_VEHICLES {
@@ -200,6 +203,50 @@ pub fn set_vehicle_value(state: State<'_, AppState>, id: String, value_cents: i6
         Ok(v.clone())
     })?;
     Ok(VehicleView::new(vehicle, current_year()))
+}
+
+/// Applies one change to a stored vehicle and returns its fresh view.
+fn change_vehicle(
+    state: &AppState,
+    id: &str,
+    change: impl FnOnce(&mut Vehicle) -> Result<(), String>,
+) -> Result<VehicleView, String> {
+    let vehicle = state.with_vault(|data| {
+        let v = data.vehicles.iter_mut().find(|v| v.id == id).ok_or("Fahrzeug nicht gefunden.")?;
+        change(v)?;
+        Ok(v.clone())
+    })?;
+    Ok(VehicleView::new(vehicle, current_year()))
+}
+
+#[tauri::command(async)]
+pub fn add_journal_entry(state: State<'_, AppState>, id: String, entry: JournalDraft) -> Result<VehicleView, String> {
+    let draft = entry.validated()?;
+    change_vehicle(&state, &id, |v| {
+        if v.journal.len() >= MAX_JOURNAL_ENTRIES {
+            return Err("Das Tagebuch ist voll.".into());
+        }
+        v.journal.push(JournalEntry { id: uuid::Uuid::new_v4().to_string(), draft });
+        Ok(())
+    })
+}
+
+#[tauri::command(async)]
+pub fn delete_journal_entry(state: State<'_, AppState>, id: String, entry_id: String) -> Result<VehicleView, String> {
+    change_vehicle(&state, &id, |v| {
+        let before = v.journal.len();
+        v.journal.retain(|e| e.id != entry_id);
+        if v.journal.len() == before { Err("Eintrag nicht gefunden.".into()) } else { Ok(()) }
+    })
+}
+
+#[tauri::command(async)]
+pub fn set_next_service(state: State<'_, AppState>, id: String, date: Option<String>) -> Result<VehicleView, String> {
+    let date = date.map(|d| check_date(&d)).transpose()?;
+    change_vehicle(&state, &id, |v| {
+        v.next_service = date;
+        Ok(())
+    })
 }
 
 #[tauri::command(async)]
