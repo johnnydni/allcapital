@@ -5,6 +5,9 @@
 
 mod commands;
 mod profiles;
+mod storage;
+mod vault;
+mod vehicles;
 
 use tauri::Manager;
 
@@ -23,6 +26,11 @@ pub fn run() {
             commands::logout,
             commands::set_nickname,
             commands::save_onboarding,
+            commands::list_vehicles,
+            commands::estimate_vehicle,
+            commands::add_vehicle,
+            commands::set_vehicle_value,
+            commands::delete_vehicle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running All Capital");

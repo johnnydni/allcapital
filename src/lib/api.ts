@@ -62,7 +62,45 @@ export type OnboardingAnswers = {
   improve: boolean;
 };
 
+export type VehicleKind = "automobil" | "fahrrad" | "escooter" | "motorrad";
+export type Drive = "verbrenner" | "elektro";
+export type Condition = "schlecht" | "mittel" | "gut" | "sehr_gut";
+export type ValueSource = "estimate" | "manual";
+
+export type VehicleDraft = {
+  kind: VehicleKind;
+  drive: Drive | null;
+  brand: string;
+  model: string;
+  variant: string;
+  buildYear: number;
+  firstRegistration: number;
+  condition: Condition;
+  equipment: string[];
+  powerPs: number | null;
+  mileageKm: number | null;
+  purchasePriceCents: number | null;
+  purchaseYear: number | null;
+};
+
+export type ValuePoint = { at: number; cents: number; source: ValueSource };
+
+export type Vehicle = VehicleDraft & {
+  id: string;
+  createdAt: number;
+  history: ValuePoint[];
+  monthlyDepreciationCents: number | null;
+};
+
+export type Estimate = { lowCents: number; midCents: number; highCents: number };
+export type EstimateResult = { estimate: Estimate | null; reason: string | null };
+
 export interface Api {
+  listVehicles(): Promise<Vehicle[]>;
+  estimateVehicle(draft: VehicleDraft): Promise<EstimateResult>;
+  addVehicle(draft: VehicleDraft, valueCents: number, source: ValueSource): Promise<Vehicle>;
+  setVehicleValue(id: string, valueCents: number): Promise<Vehicle>;
+  deleteVehicle(id: string): Promise<void>;
   listProfiles(): Promise<Profile[]>;
   register(input: RegisterInput): Promise<Profile>;
   login(email: string, password: string): Promise<Profile>;
@@ -78,6 +116,11 @@ const tauriApi: Api = {
   logout: () => invoke("logout"),
   setNickname: (nickname) => invoke("set_nickname", { nickname }),
   saveOnboarding: (answers) => invoke("save_onboarding", { answers }),
+  listVehicles: () => invoke("list_vehicles"),
+  estimateVehicle: (draft) => invoke("estimate_vehicle", { draft }),
+  addVehicle: (draft, valueCents, source) => invoke("add_vehicle", { draft, valueCents, source }),
+  setVehicleValue: (id, valueCents) => invoke("set_vehicle_value", { id, valueCents }),
+  deleteVehicle: (id) => invoke("delete_vehicle", { id }),
 };
 
 /** Browser-only preview mock. Nothing is persisted. */
@@ -85,6 +128,8 @@ function createMockApi(): Api {
   type Row = Profile & { password: string; nickname: string };
   const rows: Row[] = [];
   let session: Row | null = null;
+  let vehicles: Vehicle[] = [];
+  const now = () => Math.floor(Date.now() / 1000);
   const pub = (r: Row): Profile => ({
     id: r.id,
     firstName: r.firstName,
@@ -126,6 +171,7 @@ function createMockApi(): Api {
     },
     async logout() {
       session = null;
+      vehicles = [];
     },
     async setNickname(nickname) {
       const row = need();
@@ -136,6 +182,43 @@ function createMockApi(): Api {
       const row = need();
       row.onboardingDone = true;
       return pub(row);
+    },
+    async listVehicles() {
+      need();
+      return vehicles;
+    },
+    // Crude stand-in so the screens can be previewed; the real model lives in Rust.
+    async estimateVehicle(d) {
+      const year = new Date().getFullYear();
+      if (d.purchasePriceCents === null || d.purchaseYear === null)
+        return { estimate: null, reason: "Für eine Schätzung brauchen wir Kaufpreis und Kaufjahr." };
+      if (year - d.buildYear >= 30)
+        return { estimate: null, reason: "Für Oldtimer können wir keinen seriösen Wert berechnen. Trage den Wert bitte selbst ein, zum Beispiel aus einem Gutachten." };
+      const mid = Math.round((d.purchasePriceCents * 0.88 ** (year - d.purchaseYear)) / 10000) * 10000;
+      const round = (x: number) => Math.round(x / 10000) * 10000;
+      return { estimate: { lowCents: round(mid * 0.88), midCents: mid, highCents: round(mid * 1.12) }, reason: null };
+    },
+    async addVehicle(draft, valueCents, source) {
+      need();
+      const v: Vehicle = {
+        ...draft,
+        id: crypto.randomUUID(),
+        createdAt: now(),
+        history: [{ at: now(), cents: valueCents, source }],
+        monthlyDepreciationCents: draft.purchasePriceCents ? Math.round(valueCents * 0.008) : null,
+      };
+      vehicles = [...vehicles, v];
+      return v;
+    },
+    async setVehicleValue(id, valueCents) {
+      const v = vehicles.find((x) => x.id === id);
+      if (!v) throw "Fahrzeug nicht gefunden.";
+      const next = { ...v, history: [...v.history, { at: now(), cents: valueCents, source: "manual" as const }] };
+      vehicles = vehicles.map((x) => (x.id === id ? next : x));
+      return next;
+    },
+    async deleteVehicle(id) {
+      vehicles = vehicles.filter((x) => x.id !== id);
     },
   };
 }

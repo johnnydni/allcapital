@@ -1,6 +1,11 @@
 //! Tauri commands: the complete surface the web view can reach.
 
-use crate::profiles::{Onboarding, ProfileStore, PublicProfile, RegisterInput};
+use crate::profiles::{derive_key, Onboarding, ProfileStore, PublicProfile, RegisterInput};
+use crate::storage::{current_year, now_secs};
+use crate::vault::{Vault, VaultData, VaultKey};
+use crate::vehicles::{
+    check_value, estimate, EstimateResult, ValuePoint, ValueSource, Vehicle, VehicleDraft, VehicleView, MAX_VEHICLES,
+};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -32,25 +37,58 @@ impl Throttle {
     }
 }
 
+/// An unlocked profile. Lives in memory only; the key is wiped on drop.
+#[derive(Clone)]
+struct Session {
+    profile_id: String,
+    key: VaultKey,
+}
+
 pub struct AppState {
     /// Guards every read-modify-write of the profile file.
     store: Mutex<ProfileStore>,
-    /// Id of the unlocked profile. Lives in memory only.
-    session: Mutex<Option<String>>,
+    /// Guards every read-modify-write of a vault file.
+    vault: Mutex<Vault>,
+    session: Mutex<Option<Session>>,
     throttle: Mutex<Throttle>,
 }
 
 impl AppState {
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
-            store: Mutex::new(ProfileStore::new(data_dir)),
+            store: Mutex::new(ProfileStore::new(data_dir.clone())),
+            vault: Mutex::new(Vault::new(data_dir)),
             session: Mutex::new(None),
             throttle: Mutex::new(Throttle::default()),
         }
     }
 
-    fn session_id(&self) -> Result<String, String> {
+    fn session(&self) -> Result<Session, String> {
         lock(&self.session).clone().ok_or_else(|| "Nicht angemeldet.".to_string())
+    }
+
+    fn session_id(&self) -> Result<String, String> {
+        self.session().map(|s| s.profile_id)
+    }
+
+    /// Derives the vault key and opens the session.
+    fn unlock(&self, profile: &PublicProfile, password: &str) -> Result<(), String> {
+        let salt = lock(&self.store).vault_salt(&profile.id)?;
+        let key = Zeroizing::new(derive_key(password, &salt)?);
+        // Fail now rather than on first use if the vault cannot be opened.
+        lock(&self.vault).load(&profile.id, &key)?;
+        *lock(&self.session) = Some(Session { profile_id: profile.id.clone(), key });
+        Ok(())
+    }
+
+    /// Runs one read-modify-write on the unlocked vault.
+    fn with_vault<T>(&self, change: impl FnOnce(&mut VaultData) -> Result<T, String>) -> Result<T, String> {
+        let session = self.session()?;
+        let vault = lock(&self.vault);
+        let mut data = vault.load(&session.profile_id, &session.key)?;
+        let out = change(&mut data)?;
+        vault.save(&session.profile_id, &session.key, &data)?;
+        Ok(out)
     }
 }
 
@@ -66,11 +104,9 @@ pub fn list_profiles(state: State<'_, AppState>) -> Result<Vec<PublicProfile>, S
 
 #[tauri::command(async)]
 pub fn register(state: State<'_, AppState>, mut input: RegisterInput) -> Result<PublicProfile, String> {
-    let result = lock(&state.store).register(&input);
+    let created = lock(&state.store).register(&input);
+    let result = created.and_then(|profile| state.unlock(&profile, &input.password).map(|()| profile));
     input.password.zeroize();
-    if let Ok(profile) = &result {
-        *lock(&state.session) = Some(profile.id.clone());
-    }
     result
 }
 
@@ -81,15 +117,13 @@ pub fn login(state: State<'_, AppState>, email: String, password: String) -> Res
         return Err(format!("Zu viele Fehlversuche. Bitte warte {} Sekunden.", wait.as_secs().max(1)));
     }
     let result = lock(&state.store).verify(&email, &password);
-    let mut throttle = lock(&state.throttle);
     match &result {
-        Ok(profile) => {
-            *throttle = Throttle::default();
-            *lock(&state.session) = Some(profile.id.clone());
-        }
-        Err(_) => throttle.fail(Instant::now()),
+        Ok(_) => *lock(&state.throttle) = Throttle::default(),
+        Err(_) => lock(&state.throttle).fail(Instant::now()),
     }
-    result
+    let profile = result?;
+    state.unlock(&profile, &password)?;
+    Ok(profile)
 }
 
 #[tauri::command(async)]
@@ -107,6 +141,74 @@ pub fn set_nickname(state: State<'_, AppState>, nickname: String) -> Result<Publ
 pub fn save_onboarding(state: State<'_, AppState>, answers: Onboarding) -> Result<PublicProfile, String> {
     let id = state.session_id()?;
     lock(&state.store).save_onboarding(&id, answers)
+}
+
+#[tauri::command(async)]
+pub fn list_vehicles(state: State<'_, AppState>) -> Result<Vec<VehicleView>, String> {
+    let session = state.session()?;
+    let data = lock(&state.vault).load(&session.profile_id, &session.key)?;
+    let year = current_year();
+    Ok(data.vehicles.into_iter().map(|v| VehicleView::new(v, year)).collect())
+}
+
+/// Pure calculation; nothing is stored.
+#[tauri::command(async)]
+pub fn estimate_vehicle(state: State<'_, AppState>, draft: VehicleDraft) -> Result<EstimateResult, String> {
+    state.session()?;
+    let year = current_year();
+    let draft = draft.validated(year)?;
+    Ok(estimate(&draft, year).into())
+}
+
+#[tauri::command(async)]
+pub fn add_vehicle(
+    state: State<'_, AppState>,
+    draft: VehicleDraft,
+    value_cents: i64,
+    source: ValueSource,
+) -> Result<VehicleView, String> {
+    let year = current_year();
+    let draft = draft.validated(year)?;
+    let cents = check_value(value_cents)?;
+    let now = now_secs();
+    let vehicle = Vehicle {
+        id: uuid::Uuid::new_v4().to_string(),
+        draft,
+        created_at: now,
+        history: vec![ValuePoint { at: now, cents, source }],
+    };
+    state.with_vault(|data| {
+        if data.vehicles.len() >= MAX_VEHICLES {
+            return Err("Die maximale Anzahl an Fahrzeugen ist erreicht.".into());
+        }
+        data.vehicles.push(vehicle.clone());
+        Ok(())
+    })?;
+    Ok(VehicleView::new(vehicle, year))
+}
+
+/// Records a new manually entered value. Earlier values stay in the history.
+#[tauri::command(async)]
+pub fn set_vehicle_value(state: State<'_, AppState>, id: String, value_cents: i64) -> Result<VehicleView, String> {
+    let cents = check_value(value_cents)?;
+    let vehicle = state.with_vault(|data| {
+        let v = data.vehicles.iter_mut().find(|v| v.id == id).ok_or("Fahrzeug nicht gefunden.")?;
+        v.history.push(ValuePoint { at: now_secs(), cents, source: ValueSource::Manual });
+        // Keep the file bounded: drop the oldest points beyond 1,000.
+        let excess = v.history.len().saturating_sub(1000);
+        v.history.drain(..excess);
+        Ok(v.clone())
+    })?;
+    Ok(VehicleView::new(vehicle, current_year()))
+}
+
+#[tauri::command(async)]
+pub fn delete_vehicle(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.with_vault(|data| {
+        let before = data.vehicles.len();
+        data.vehicles.retain(|v| v.id != id);
+        if data.vehicles.len() == before { Err("Fahrzeug nicht gefunden.".into()) } else { Ok(()) }
+    })
 }
 
 #[cfg(test)]

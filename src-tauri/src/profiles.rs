@@ -12,10 +12,9 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use argon2::{Algorithm, Argon2, Params, Version};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::storage::{now_secs, write_private};
 
 pub const MIN_PASSWORD_CHARS: usize = 10;
 const MAX_PASSWORD_BYTES: usize = 1024;
@@ -153,6 +152,9 @@ struct Profile {
     phone: String,
     language: Language,
     password_hash: String,
+    /// Salt for deriving the vault encryption key from the password.
+    #[serde(default)]
+    vault_salt: String,
     consent: Consent,
     #[serde(default)]
     onboarding: Option<Onboarding>,
@@ -211,31 +213,11 @@ impl ProfileStore {
         }
     }
 
-    /// Write to a temp file, fsync, then rename: a crash never leaves a half-written file.
     fn save(&self, data: &FileFormat) -> Result<(), String> {
-        let write = || -> std::io::Result<()> {
-            fs::create_dir_all(&self.dir)?;
-            restrict(&self.dir, 0o700)?;
-            let tmp = self.dir.join(format!("{FILE_NAME}.{}.tmp", uuid::Uuid::new_v4()));
-            let mut opts = fs::OpenOptions::new();
-            opts.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
-            }
-            let result = (|| {
-                let mut file = opts.open(&tmp)?;
-                file.write_all(&serde_json::to_vec_pretty(data)?)?;
-                file.sync_all()?;
-                fs::rename(&tmp, self.path())
-            })();
-            if result.is_err() {
-                let _ = fs::remove_file(&tmp);
-            }
-            result
-        };
-        write().map_err(|_| ERR_STORAGE.to_string())
+        serde_json::to_vec_pretty(data)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| write_private(&self.dir, FILE_NAME, &bytes))
+            .map_err(|_| ERR_STORAGE.to_string())
     }
 
     pub fn list(&self) -> Result<Vec<PublicProfile>, String> {
@@ -266,6 +248,7 @@ impl ProfileStore {
             phone,
             language: input.language,
             password_hash: hash_password(&input.password)?,
+            vault_salt: new_salt(),
             consent: Consent { legal_version: LEGAL_VERSION.into(), accepted_at: now },
             onboarding: None,
             created_at: now,
@@ -290,6 +273,19 @@ impl ProfileStore {
         }
     }
 
+    /// Salt for the profile's vault key; created on demand for older profiles.
+    pub fn vault_salt(&self, id: &str) -> Result<String, String> {
+        let mut data = self.load()?;
+        let profile = data.profiles.iter_mut().find(|p| p.id == id).ok_or("Profil nicht gefunden.")?;
+        if profile.vault_salt.is_empty() {
+            profile.vault_salt = new_salt();
+            let salt = profile.vault_salt.clone();
+            self.save(&data)?;
+            return Ok(salt);
+        }
+        Ok(profile.vault_salt.clone())
+    }
+
     pub fn set_nickname(&self, id: &str, nickname: &str) -> Result<PublicProfile, String> {
         let nickname = nickname.trim();
         if nickname.chars().count() > MAX_FIELD_CHARS || nickname.chars().any(char::is_control) {
@@ -311,21 +307,6 @@ impl ProfileStore {
         self.save(&data)?;
         Ok(public)
     }
-}
-
-fn restrict(path: &Path, mode: u32) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
-    }
-    #[cfg(not(unix))]
-    let _ = (path, mode);
-    Ok(())
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 fn clean_name(raw: &str, label: &str) -> Result<String, String> {
@@ -367,6 +348,20 @@ fn check_password(password: &str) -> Result<(), String> {
 fn hasher() -> Argon2<'static> {
     let params = Params::new(64 * 1024, 3, 1, None).expect("static argon2 params");
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+}
+
+fn new_salt() -> String {
+    SaltString::generate(&mut OsRng).to_string()
+}
+
+/// Derives the 256-bit vault key. Uses its own salt, so the key cannot be
+/// computed from the stored password hash.
+pub fn derive_key(password: &str, salt: &str) -> Result<[u8; 32], String> {
+    let mut key = [0u8; 32];
+    hasher()
+        .hash_password_into(password.as_bytes(), salt.as_bytes(), &mut key)
+        .map_err(|_| "Der Schlüssel konnte nicht abgeleitet werden.".to_string())?;
+    Ok(key)
 }
 
 fn hash_password(password: &str) -> Result<String, String> {
@@ -440,6 +435,12 @@ mod tests {
         assert!(!raw.contains("correct horse battery"));
         assert!(raw.contains("$argon2id$"));
         assert_eq!(raw.matches("\"bank\"").count(), 1, "duplicates are removed");
+
+        let salt = store.vault_salt(&created.id).unwrap();
+        assert_eq!(salt, store.vault_salt(&created.id).unwrap(), "salt is stable");
+        let key = derive_key("correct horse battery", &salt).unwrap();
+        assert_eq!(key, derive_key("correct horse battery", &salt).unwrap());
+        assert_ne!(key, derive_key("wrong password!", &salt).unwrap());
     }
 
     #[cfg(unix)]

@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
+import { api, type Vehicle } from "../lib/api";
+import { formatCents } from "../lib/money";
+import { totalValue } from "../lib/vehicles";
 import { Icon } from "../components/Icon";
 import { Wordmark } from "../components/Logo";
+import { VehicleAsset } from "./VehicleAsset";
+import { VehicleWizard } from "./VehicleWizard";
+import logoMark from "../assets/logo-mark.png";
+import settings from "../assets/settings.png";
 
 /** "welcome to hub" frame. */
 export function HubWelcome(p: { onDemo: () => void; onStart: () => void; onLock: () => void }) {
@@ -84,86 +91,161 @@ function useNow(): string {
   return stampFormat.format(now).replace(", ", " - ");
 }
 
-/** "Empty Hub VALUE" / "Empty Hub FLOW" frames. Tiles are not wired to data yet. */
+type Sub = { view: "grid" } | { view: "wizard" } | { view: "asset"; id: string };
+
+/** Hub with the VALUE / FLOW grids, the vehicle wizard and the vehicle asset screen. */
 export function Hub(p: { name: string; demo: boolean; onBack: () => void }) {
   const [mode, setMode] = useState<Mode>("value");
+  const [sub, setSub] = useState<Sub>({ view: "grid" });
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const stamp = useNow();
+
+  useEffect(() => {
+    if (p.demo) return;
+    let alive = true;
+    api
+      .listVehicles()
+      .then((list) => alive && setVehicles(list))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [p.demo]);
+
   const tiles = TILES[mode];
+  const total = totalValue(vehicles);
   const add = { disabled: true, title: "Noch nicht verfügbar" } as const;
+  const grid = { view: "grid" } as const;
+
   return (
     <section className="screen">
-      <Wordmark sub={p.demo ? "Demo Hub." : "Willkommen im Hub."} />
-      <button
-        className={`mode mode--${mode}`}
-        role="switch"
-        aria-checked={mode === "flow"}
-        aria-label="Zwischen Value und Flow wechseln"
-        onClick={() => setMode(mode === "value" ? "flow" : "value")}
-      >
-        <span className="mode__label">{mode.toUpperCase()}</span>
-        <span className="mode__track">
-          <i />
-        </span>
-      </button>
-      <div className="top-actions">
-        <button disabled aria-label="Einstellungen" title="Noch nicht verfügbar">
-          <Icon name="gear" />
-        </button>
-      </div>
-      <button className="hub__back" onClick={p.onBack} aria-label="Zurück">
-        <Icon name="chevronLeft" />
+      <img className="hh__logo" src={logoMark} alt="" />
+      <p className="hh__title">All Capital.</p>
+      <p className="hh__sub">{p.demo ? "Demo Hub." : "Willkommen im Hub."}</p>
+      <button className="hh__gear" disabled aria-label="Einstellungen" title="Noch nicht verfügbar">
+        <img src={settings} alt="" />
       </button>
 
-      <div className="hub" key={mode}>
-        {tiles.map((t, i) => (
-          <button key={t.title} className={`card card--cat card--c${i}`} {...add}>
-            <span className="card__title">{t.title}</span>
-            <Icon name={t.icon} className="card__icon" />
-            <Icon name="plus" className="card__plus" />
+      {sub.view === "wizard" && (
+        <VehicleWizard
+          onExit={() => setSub(grid)}
+          onDone={(v) => {
+            setVehicles((list) => [...list, v]);
+            setSub({ view: "asset", id: v.id });
+          }}
+        />
+      )}
+
+      {sub.view === "asset" && (
+        <VehicleAsset
+          vehicles={vehicles}
+          id={sub.id}
+          onSelect={(id) => setSub({ view: "asset", id })}
+          onClose={() => setSub(grid)}
+          onChanged={(v) => setVehicles((list) => list.map((x) => (x.id === v.id ? v : x)))}
+          onDeleted={(id) => {
+            setVehicles((list) => list.filter((x) => x.id !== id));
+            setSub(grid);
+          }}
+        />
+      )}
+
+      {sub.view === "grid" && (
+        <>
+          <button
+            className={`mode mode--${mode}`}
+            role="switch"
+            aria-checked={mode === "flow"}
+            aria-label="Zwischen Value und Flow wechseln"
+            onClick={() => setMode(mode === "value" ? "flow" : "value")}
+          >
+            <span className="mode__label">{mode.toUpperCase()}</span>
+            <span className="mode__track">
+              <i />
+            </span>
           </button>
-        ))}
-        {mode === "value" ? (
-          <>
-            <button className="card card--add card--top" {...add} aria-label="Hinzufügen">
+          <button className="hub__back" onClick={p.onBack} aria-label="Zurück">
+            <Icon name="chevronLeft" />
+          </button>
+
+          <div className="hub" key={mode}>
+            {tiles.map((t, i) => {
+              const mobility = mode === "value" && t.title === "Mobilität" && !p.demo;
+              const owned = mobility && vehicles.length > 0;
+              return (
+                <div key={t.title} className={`card card--cat card--c${i}`}>
+                  <span className="card__title">{t.title}</span>
+                  <Icon name={t.icon} className="card__icon" />
+                  {owned && (
+                    <button
+                      className="card__open"
+                      onClick={() => setSub({ view: "asset", id: vehicles[0]!.id })}
+                      aria-label="Fahrzeuge anzeigen"
+                    >
+                      {formatCents(total)}
+                    </button>
+                  )}
+                  <button
+                    className={`card__add ${owned ? "card__add--corner" : ""}`}
+                    disabled={!mobility}
+                    onClick={() => setSub({ view: "wizard" })}
+                    aria-label={mobility ? "Neues Fahrzeug hinzufügen" : "Hinzufügen"}
+                    title={mobility ? undefined : "Noch nicht verfügbar"}
+                  >
+                    <Icon name="plus" />
+                    {mobility && <span className="card__tip">Neues Fahrzeug hinzufügen</span>}
+                  </button>
+                </div>
+              );
+            })}
+            {mode === "value" ? (
+              <>
+                <button className="card card--add card--top" {...add} aria-label="Hinzufügen">
+                  <Icon name="plus" />
+                </button>
+                <button className="card card--add card--tall" {...add} aria-label="Hinzufügen">
+                  <Icon name="plus" />
+                </button>
+              </>
+            ) : (
+              <div className="card book">
+                <div className="book__strip" />
+                <h3>
+                  Persönliches
+                  <br />
+                  Finanzbuch
+                </h3>
+                <div className="book__name">
+                  <span>{p.name}</span>
+                  <Icon name="lock" />
+                </div>
+                <Icon name="book" className="book__icon" />
+              </div>
+            )}
+            <button className="card card--add card--bl" {...add} aria-label="Hinzufügen">
               <Icon name="plus" />
             </button>
-            <button className="card card--add card--tall" {...add} aria-label="Hinzufügen">
-              <Icon name="plus" />
-            </button>
-          </>
-        ) : (
-          <div className="card book">
-            <div className="book__strip" />
-            <h3>
-              Persönliches
-              <br />
-              Finanzbuch
-            </h3>
-            <div className="book__name">
-              <span>{p.name}</span>
-              <Icon name="lock" />
-            </div>
-            <Icon name="book" className="book__icon" />
+            {["s1", "s2", "s3", "s4"].map((k) => (
+              <button key={k} className={`card card--add card--sm card--${k}`} {...add} aria-label="Hinzufügen">
+                <Icon name={mode === "flow" && k === "s3" ? "shield" : "plus"} />
+              </button>
+            ))}
+            <aside className="card summary">
+              <div className="summary__head">
+                <strong>Privatvermögen</strong>
+                <time>{stamp}</time>
+                <b>Gesamt</b>
+                {total > 0 && <span>{formatCents(total)}</span>}
+              </div>
+              <div className="summary__row">
+                Sachanlagen
+                {total > 0 && <span>{formatCents(total)}</span>}
+              </div>
+              <div className="summary__row">Cashflow</div>
+            </aside>
           </div>
-        )}
-        <button className="card card--add card--bl" {...add} aria-label="Hinzufügen">
-          <Icon name="plus" />
-        </button>
-        {["s1", "s2", "s3", "s4"].map((k) => (
-          <button key={k} className={`card card--add card--sm card--${k}`} {...add} aria-label="Hinzufügen">
-            <Icon name={mode === "flow" && k === "s3" ? "shield" : "plus"} />
-          </button>
-        ))}
-        <aside className="card summary">
-          <div className="summary__head">
-            <strong>Privatvermögen</strong>
-            <time>{stamp}</time>
-            <b>Gesamt</b>
-          </div>
-          <div className="summary__row">Sachanlagen</div>
-          <div className="summary__row">Cashflow</div>
-        </aside>
-      </div>
+        </>
+      )}
     </section>
   );
 }
