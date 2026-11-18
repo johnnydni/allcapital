@@ -4,6 +4,8 @@
 //! all disk access. The web view only ever receives [`profiles::PublicProfile`].
 
 mod commands;
+mod devices;
+mod properties;
 mod profiles;
 mod storage;
 mod vault;
@@ -34,6 +36,15 @@ pub fn run() {
             commands::add_journal_entry,
             commands::delete_journal_entry,
             commands::set_next_service,
+            commands::list_properties,
+            commands::add_property,
+            commands::set_property_value,
+            commands::delete_property,
+            commands::list_devices,
+            commands::estimate_device,
+            commands::add_device,
+            commands::set_device_value,
+            commands::delete_device,
         ])
         .run(tauri::generate_context!())
         .expect("error while running All Capital");

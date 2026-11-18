@@ -109,6 +109,59 @@ export type Vehicle = VehicleDraft & {
   monthlyDepreciationCents: number | null;
 };
 
+export type PropertyKind = "haus" | "wohnung" | "garage" | "gewerbe";
+
+export type PropertyDraft = {
+  kind: PropertyKind;
+  name: string;
+  street: string;
+  postalCode: string;
+  city: string;
+  state: string;
+  buildYear: number | null;
+  livingAreaM2: number | null;
+  plotAreaM2: number | null;
+  rooms: number | null;
+  bathrooms: number | null;
+  purchasePriceCents: number | null;
+  purchaseYear: number | null;
+  rented: boolean;
+  buildingSharePercent: number | null;
+  nextRenovationYear: number | null;
+};
+
+export type Property = PropertyDraft & {
+  id: string;
+  createdAt: number;
+  history: ValuePoint[];
+  yearlyAfaCents: number | null;
+  afaRateBp: number | null;
+};
+
+export type DeviceKind =
+  | "computer"
+  | "laptop"
+  | "smartphone"
+  | "tablet"
+  | "monitor"
+  | "grafikkarte"
+  | "prozessor"
+  | "arbeitsspeicher"
+  | "konsole"
+  | "kamera"
+  | "audio"
+  | "sonstiges";
+
+export type DeviceDraft = {
+  kind: DeviceKind;
+  name: string;
+  condition: Condition;
+  purchasePriceCents: number | null;
+  purchaseYear: number | null;
+};
+
+export type Device = DeviceDraft & { id: string; createdAt: number; history: ValuePoint[] };
+
 export type Estimate = { lowCents: number; midCents: number; highCents: number };
 export type EstimateResult = { estimate: Estimate | null; reason: string | null };
 
@@ -121,6 +174,15 @@ export interface Api {
   addJournalEntry(id: string, entry: JournalDraft): Promise<Vehicle>;
   deleteJournalEntry(id: string, entryId: string): Promise<Vehicle>;
   setNextService(id: string, date: string | null): Promise<Vehicle>;
+  listProperties(): Promise<Property[]>;
+  addProperty(draft: PropertyDraft, valueCents: number): Promise<Property>;
+  setPropertyValue(id: string, valueCents: number): Promise<Property>;
+  deleteProperty(id: string): Promise<void>;
+  listDevices(): Promise<Device[]>;
+  estimateDevice(draft: DeviceDraft): Promise<EstimateResult>;
+  addDevice(draft: DeviceDraft, valueCents: number, source: ValueSource): Promise<Device>;
+  setDeviceValue(id: string, valueCents: number): Promise<Device>;
+  deleteDevice(id: string): Promise<void>;
   listProfiles(): Promise<Profile[]>;
   register(input: RegisterInput): Promise<Profile>;
   login(email: string, password: string): Promise<Profile>;
@@ -144,6 +206,15 @@ const tauriApi: Api = {
   addJournalEntry: (id, entry) => invoke("add_journal_entry", { id, entry }),
   deleteJournalEntry: (id, entryId) => invoke("delete_journal_entry", { id, entryId }),
   setNextService: (id, date) => invoke("set_next_service", { id, date }),
+  listProperties: () => invoke("list_properties"),
+  addProperty: (draft, valueCents) => invoke("add_property", { draft, valueCents }),
+  setPropertyValue: (id, valueCents) => invoke("set_property_value", { id, valueCents }),
+  deleteProperty: (id) => invoke("delete_property", { id }),
+  listDevices: () => invoke("list_devices"),
+  estimateDevice: (draft) => invoke("estimate_device", { draft }),
+  addDevice: (draft, valueCents, source) => invoke("add_device", { draft, valueCents, source }),
+  setDeviceValue: (id, valueCents) => invoke("set_device_value", { id, valueCents }),
+  deleteDevice: (id) => invoke("delete_device", { id }),
 };
 
 /** Browser-only preview mock. Nothing is persisted. */
@@ -152,6 +223,8 @@ function createMockApi(): Api {
   const rows: Row[] = [];
   let session: Row | null = null;
   let vehicles: Vehicle[] = [];
+  let properties: Property[] = [];
+  let devices: Device[] = [];
   const now = () => Math.floor(Date.now() / 1000);
   const patch = (id: string, change: (v: Vehicle) => Vehicle): Vehicle => {
     const v = vehicles.find((x) => x.id === id);
@@ -202,6 +275,8 @@ function createMockApi(): Api {
     async logout() {
       session = null;
       vehicles = [];
+      properties = [];
+      devices = [];
     },
     async setNickname(nickname) {
       const row = need();
@@ -256,6 +331,66 @@ function createMockApi(): Api {
     },
     async setNextService(id, date) {
       return patch(id, (v) => ({ ...v, nextService: date }));
+    },
+    async listProperties() {
+      need();
+      return properties;
+    },
+    async addProperty(draft, valueCents) {
+      need();
+      const rate = draft.buildYear !== null && draft.buildYear < 1925 ? 250 : draft.buildYear !== null && draft.buildYear >= 2023 ? 300 : 200;
+      const afa =
+        draft.rented && draft.purchasePriceCents && draft.buildingSharePercent && draft.buildYear
+          ? Math.floor((((draft.purchasePriceCents * draft.buildingSharePercent) / 100) * rate) / 10000)
+          : null;
+      const p: Property = {
+        ...draft,
+        id: crypto.randomUUID(),
+        createdAt: now(),
+        history: [{ at: now(), cents: valueCents, source: "manual" }],
+        yearlyAfaCents: afa,
+        afaRateBp: afa ? rate : null,
+      };
+      properties = [...properties, p];
+      return p;
+    },
+    async setPropertyValue(id, valueCents) {
+      const p = properties.find((x) => x.id === id);
+      if (!p) throw "Immobilie nicht gefunden.";
+      const next = { ...p, history: [...p.history, { at: now(), cents: valueCents, source: "manual" as const }] };
+      properties = properties.map((x) => (x.id === id ? next : x));
+      return next;
+    },
+    async deleteProperty(id) {
+      properties = properties.filter((x) => x.id !== id);
+    },
+    async listDevices() {
+      need();
+      return devices;
+    },
+    async estimateDevice(d) {
+      if (d.purchasePriceCents === null || d.purchaseYear === null)
+        return { estimate: null, reason: "Für eine Schätzung brauchen wir Kaufpreis und Kaufjahr." };
+      const age = new Date().getFullYear() - d.purchaseYear;
+      const mid = Math.round((d.purchasePriceCents * (age > 0 ? 0.75 * 0.85 ** (age - 1) : 1)) / 100) * 100;
+      const round = (x: number) => Math.round(x / 100) * 100;
+      return { estimate: { lowCents: round(mid * 0.85), midCents: mid, highCents: round(mid * 1.15) }, reason: null };
+    },
+    async addDevice(draft, valueCents, source) {
+      need();
+      const d: Device = { ...draft, id: crypto.randomUUID(), createdAt: now(), history: [{ at: now(), cents: valueCents, source }] };
+      devices = [...devices, d];
+      return d;
+    },
+    async setDeviceValue(id, valueCents) {
+      const d = devices.find((x) => x.id === id);
+      if (!d) throw "Gerät nicht gefunden.";
+      const next = { ...d, history: [...d.history, { at: now(), cents: valueCents, source: "manual" as const }] };
+      devices = devices.map((x) => (x.id === id ? next : x));
+      return next;
+    },
+    async deleteDevice(id) {
+      devices = devices.filter((x) => x.id !== id);
     },
     async deleteVehicle(id) {
       vehicles = vehicles.filter((x) => x.id !== id);

@@ -1,5 +1,7 @@
 //! Tauri commands: the complete surface the web view can reach.
 
+use crate::devices::{self, Device, DeviceDraft, MAX_DEVICES};
+use crate::properties::{Property, PropertyDraft, PropertyView, MAX_PROPERTIES};
 use crate::profiles::{derive_key, Onboarding, ProfileStore, PublicProfile, RegisterInput};
 use crate::storage::{current_year, now_secs};
 use crate::vault::{Vault, VaultData, VaultKey};
@@ -196,10 +198,7 @@ pub fn set_vehicle_value(state: State<'_, AppState>, id: String, value_cents: i6
     let cents = check_value(value_cents)?;
     let vehicle = state.with_vault(|data| {
         let v = data.vehicles.iter_mut().find(|v| v.id == id).ok_or("Fahrzeug nicht gefunden.")?;
-        v.history.push(ValuePoint { at: now_secs(), cents, source: ValueSource::Manual });
-        // Keep the file bounded: drop the oldest points beyond 1,000.
-        let excess = v.history.len().saturating_sub(1000);
-        v.history.drain(..excess);
+        push_value(&mut v.history, cents);
         Ok(v.clone())
     })?;
     Ok(VehicleView::new(vehicle, current_year()))
@@ -255,6 +254,130 @@ pub fn delete_vehicle(state: State<'_, AppState>, id: String) -> Result<(), Stri
         let before = data.vehicles.len();
         data.vehicles.retain(|v| v.id != id);
         if data.vehicles.len() == before { Err("Fahrzeug nicht gefunden.".into()) } else { Ok(()) }
+    })
+}
+
+/// Appends a value point and keeps the history bounded.
+fn push_value(history: &mut Vec<ValuePoint>, cents: i64) {
+    history.push(ValuePoint { at: now_secs(), cents, source: ValueSource::Manual });
+    let excess = history.len().saturating_sub(1000);
+    history.drain(..excess);
+}
+
+fn not_found(what: &str) -> String {
+    format!("{what} nicht gefunden.")
+}
+
+#[tauri::command(async)]
+pub fn list_properties(state: State<'_, AppState>) -> Result<Vec<PropertyView>, String> {
+    let session = state.session()?;
+    let data = lock(&state.vault).load(&session.profile_id, &session.key)?;
+    let year = current_year();
+    Ok(data.properties.into_iter().map(|p| PropertyView::new(p, year)).collect())
+}
+
+#[tauri::command(async)]
+pub fn add_property(
+    state: State<'_, AppState>,
+    draft: PropertyDraft,
+    value_cents: i64,
+) -> Result<PropertyView, String> {
+    let year = current_year();
+    let draft = draft.validated(year)?;
+    let cents = check_value(value_cents)?;
+    let now = now_secs();
+    let property = Property {
+        id: uuid::Uuid::new_v4().to_string(),
+        draft,
+        created_at: now,
+        history: vec![ValuePoint { at: now, cents, source: ValueSource::Manual }],
+    };
+    state.with_vault(|data| {
+        if data.properties.len() >= MAX_PROPERTIES {
+            return Err("Die maximale Anzahl an Immobilien ist erreicht.".into());
+        }
+        data.properties.push(property.clone());
+        Ok(())
+    })?;
+    Ok(PropertyView::new(property, year))
+}
+
+#[tauri::command(async)]
+pub fn set_property_value(state: State<'_, AppState>, id: String, value_cents: i64) -> Result<PropertyView, String> {
+    let cents = check_value(value_cents)?;
+    let property = state.with_vault(|data| {
+        let p = data.properties.iter_mut().find(|p| p.id == id).ok_or_else(|| not_found("Immobilie"))?;
+        push_value(&mut p.history, cents);
+        Ok(p.clone())
+    })?;
+    Ok(PropertyView::new(property, current_year()))
+}
+
+#[tauri::command(async)]
+pub fn delete_property(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.with_vault(|data| {
+        let before = data.properties.len();
+        data.properties.retain(|p| p.id != id);
+        if data.properties.len() == before { Err(not_found("Immobilie")) } else { Ok(()) }
+    })
+}
+
+#[tauri::command(async)]
+pub fn list_devices(state: State<'_, AppState>) -> Result<Vec<Device>, String> {
+    let session = state.session()?;
+    Ok(lock(&state.vault).load(&session.profile_id, &session.key)?.devices)
+}
+
+/// Pure calculation; nothing is stored.
+#[tauri::command(async)]
+pub fn estimate_device(state: State<'_, AppState>, draft: DeviceDraft) -> Result<EstimateResult, String> {
+    state.session()?;
+    let year = current_year();
+    Ok(devices::estimate(&draft.validated(year)?, year).into())
+}
+
+#[tauri::command(async)]
+pub fn add_device(
+    state: State<'_, AppState>,
+    draft: DeviceDraft,
+    value_cents: i64,
+    source: ValueSource,
+) -> Result<Device, String> {
+    let draft = draft.validated(current_year())?;
+    let cents = check_value(value_cents)?;
+    let now = now_secs();
+    let device = Device {
+        id: uuid::Uuid::new_v4().to_string(),
+        draft,
+        created_at: now,
+        history: vec![ValuePoint { at: now, cents, source }],
+    };
+    state.with_vault(|data| {
+        if data.devices.len() >= MAX_DEVICES {
+            return Err("Die maximale Anzahl an Geräten ist erreicht.".into());
+        }
+        data.devices.push(device.clone());
+        Ok(())
+    })?;
+    Ok(device)
+}
+
+#[tauri::command(async)]
+pub fn set_device_value(state: State<'_, AppState>, id: String, value_cents: i64) -> Result<Device, String> {
+    let cents = check_value(value_cents)?;
+    state.with_vault(|data| {
+        let d = data.devices.iter_mut().find(|d| d.id == id).ok_or_else(|| not_found("Gerät"))?;
+        push_value(&mut d.history, cents);
+        Ok(d.clone())
+    })
+}
+
+#[tauri::command(async)]
+pub fn delete_device(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.with_vault(|data| {
+        let before = data.devices.len();
+        data.devices.retain(|d| d.id != id);
+        if data.devices.len() == before { Err(not_found("Gerät")) } else { Ok(()) }
     })
 }
 

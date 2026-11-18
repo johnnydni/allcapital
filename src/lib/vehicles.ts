@@ -1,4 +1,6 @@
-import type { Condition, JournalCategory, JournalEntry, Vehicle, VehicleKind } from "./api";
+import type { Condition, JournalCategory, JournalEntry, ValuePoint, Vehicle, VehicleKind } from "./api";
+
+type Valued = { history: ValuePoint[] };
 
 export const CONDITION_LABEL: Record<Condition, string> = {
   schlecht: "Schlecht",
@@ -14,16 +16,35 @@ export const KIND_LABEL: Record<VehicleKind, string> = {
   motorrad: "Motorräder",
 };
 
-export function currentValue(v: Vehicle): number {
+export function currentValue(v: Valued): number {
   return v.history[v.history.length - 1]?.cents ?? 0;
 }
 
-export function totalValue(vehicles: Vehicle[]): number {
-  return vehicles.reduce((sum, v) => sum + currentValue(v), 0);
+export function totalValue(items: Valued[]): number {
+  return items.reduce((sum, v) => sum + currentValue(v), 0);
+}
+
+/** Current minus first recorded value, summed. */
+export function totalGain(items: Valued[]): number {
+  return items.reduce((sum, v) => sum + currentValue(v) - (v.history[0]?.cents ?? 0), 0);
+}
+
+/** Change of a whole group since each item's first value, as a fraction. */
+export function groupChange(items: Valued[]): number | null {
+  const first = items.reduce((sum, v) => sum + (v.history[0]?.cents ?? 0), 0);
+  if (!first || !items.some((v) => v.history.length > 1)) return null;
+  return totalGain(items) / first;
+}
+
+/** Direction of the most recent value change: 1 up, -1 down, 0 unchanged. */
+export function lastMove(v: Valued): number {
+  const h = v.history;
+  if (h.length < 2) return 0;
+  return Math.sign(h[h.length - 1]!.cents - h[h.length - 2]!.cents);
 }
 
 /** Change between the first and the latest recorded value, as a fraction. Null with fewer than two values. */
-export function valueChange(v: Vehicle): number | null {
+export function valueChange(v: Valued): number | null {
   const first = v.history[0]?.cents;
   if (v.history.length < 2 || !first) return null;
   return (currentValue(v) - first) / first;

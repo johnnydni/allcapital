@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 const MAX_TEXT: usize = 60;
 const MAX_EQUIPMENT: usize = 20;
-const MAX_CENTS: i64 = 1_000_000_000_000; // 10 billion €
+pub(crate) const MAX_CENTS: i64 = 1_000_000_000_000; // 10 billion €
 pub const MAX_VEHICLES: usize = 200;
 pub const MAX_JOURNAL_ENTRIES: usize = 5000;
 const MAX_NOTE: usize = 200;
@@ -211,7 +211,7 @@ impl From<Result<Estimate, String>> for EstimateResult {
     }
 }
 
-fn clean_text(raw: &str, label: &str, required: bool) -> Result<String, String> {
+pub(crate) fn clean_text(raw: &str, label: &str, required: bool) -> Result<String, String> {
     let v = raw.trim();
     if (required && v.is_empty()) || v.chars().count() > MAX_TEXT || v.chars().any(char::is_control) {
         return Err(format!("{label} ist ungültig."));
@@ -299,7 +299,7 @@ fn yearly_rate(kind: VehicleKind, drive: Option<Drive>, age_years: f64) -> f64 {
     }
 }
 
-fn condition_factor(c: Condition) -> f64 {
+pub(crate) fn condition_factor(c: Condition) -> f64 {
     match c {
         Condition::Schlecht => 0.75,
         Condition::Mittel => 0.90,
@@ -344,7 +344,7 @@ fn model_value(d: &VehicleDraft, year_now: u16, extra_months: u32) -> Result<f64
     Ok(value * condition_factor(d.condition) * mileage_factor(d, age_then))
 }
 
-fn round_to(cents: f64, step: i64) -> i64 {
+pub(crate) fn round_to(cents: f64, step: i64) -> i64 {
     ((cents / step as f64).round() as i64) * step
 }
 

@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
-import { api, type Vehicle } from "../lib/api";
+import { api, type Device, type Property, type Vehicle } from "../lib/api";
 import { formatCents } from "../lib/money";
 import { totalValue } from "../lib/vehicles";
 import { Icon } from "../components/Icon";
 import { Wordmark } from "../components/Logo";
 import { VehicleAsset } from "./VehicleAsset";
 import { VehicleJournal } from "./VehicleJournal";
+import { PropertyAsset } from "./PropertyAsset";
+import { PropertyWizard } from "./PropertyWizard";
+import { TechAsset } from "./TechAsset";
 import { VehicleWizard } from "./VehicleWizard";
 import logoMark from "../assets/logo-mark.png";
 import settings from "../assets/settings.png";
@@ -92,21 +95,33 @@ function useNow(): string {
   return stampFormat.format(now).replace(", ", " - ");
 }
 
-type Sub = { view: "grid" } | { view: "wizard" } | { view: "asset" | "journal"; id: string };
+type Sub =
+  | { view: "grid" }
+  | { view: "wizard" | "property-wizard" }
+  | { view: "asset" | "journal" | "property"; id: string }
+  | { view: "tech"; adding: boolean };
 
-/** Hub with the VALUE / FLOW grids, the vehicle wizard and the vehicle asset screen. */
+type Category = { label: string; total: number; open?: () => void; add: () => void; tip: string };
+
+/** Hub with the VALUE / FLOW grids and the asset screens behind the tiles. */
 export function Hub(p: { name: string; demo: boolean; onBack: () => void }) {
   const [mode, setMode] = useState<Mode>("value");
   const [sub, setSub] = useState<Sub>({ view: "grid" });
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [properties, setProperties] = useState<Property[]>([]);
+  const [devices, setDevices] = useState<Device[]>([]);
   const stamp = useNow();
 
   useEffect(() => {
     if (p.demo) return;
     let alive = true;
-    api
-      .listVehicles()
-      .then((list) => alive && setVehicles(list))
+    Promise.all([api.listVehicles(), api.listProperties(), api.listDevices()])
+      .then(([v, pr, d]) => {
+        if (!alive) return;
+        setVehicles(v);
+        setProperties(pr);
+        setDevices(d);
+      })
       .catch(() => undefined);
     return () => {
       alive = false;
@@ -114,10 +129,34 @@ export function Hub(p: { name: string; demo: boolean; onBack: () => void }) {
   }, [p.demo]);
 
   const tiles = TILES[mode];
-  const total = totalValue(vehicles);
+  const total = totalValue(vehicles) + totalValue(properties) + totalValue(devices);
+  const replace = <T extends { id: string }>(item: T) => (list: T[]) => list.map((x) => (x.id === item.id ? item : x));
+  const categories: Record<string, Category> = {
+    Immobilie: {
+      label: "Immobilien anzeigen",
+      total: totalValue(properties),
+      open: properties[0] && (() => setSub({ view: "property", id: properties[0]!.id })),
+      add: () => setSub({ view: "property-wizard" }),
+      tip: "Neue Immobilie hinzufügen",
+    },
+    Mobilität: {
+      label: "Fahrzeuge anzeigen",
+      total: totalValue(vehicles),
+      open: vehicles[0] && (() => setSub({ view: "asset", id: vehicles[0]!.id })),
+      add: () => setSub({ view: "wizard" }),
+      tip: "Neues Fahrzeug hinzufügen",
+    },
+    Tech: {
+      label: "Geräte anzeigen",
+      total: totalValue(devices),
+      open: devices[0] && (() => setSub({ view: "tech", adding: false })),
+      add: () => setSub({ view: "tech", adding: true }),
+      tip: "Neues Gerät hinzufügen",
+    },
+  };
   const add = { disabled: true, title: "Noch nicht verfügbar" } as const;
   const grid = { view: "grid" } as const;
-  const update = (v: Vehicle) => setVehicles((list) => list.map((x) => (x.id === v.id ? v : x)));
+  const update = (v: Vehicle) => setVehicles(replace(v));
   const journalVehicle = sub.view === "journal" ? vehicles.find((x) => x.id === sub.id) : undefined;
 
   return (
@@ -154,6 +193,42 @@ export function Hub(p: { name: string; demo: boolean; onBack: () => void }) {
         />
       )}
 
+      {sub.view === "property-wizard" && (
+        <PropertyWizard
+          onExit={() => setSub(grid)}
+          onDone={(pr) => {
+            setProperties((list) => [...list, pr]);
+            setSub({ view: "property", id: pr.id });
+          }}
+        />
+      )}
+
+      {sub.view === "property" && (
+        <PropertyAsset
+          properties={properties}
+          id={sub.id}
+          onSelect={(id) => setSub({ view: "property", id })}
+          onClose={() => setSub(grid)}
+          onAdd={() => setSub({ view: "property-wizard" })}
+          onChanged={(pr) => setProperties(replace(pr))}
+          onDeleted={(id) => {
+            setProperties((list) => list.filter((x) => x.id !== id));
+            setSub(grid);
+          }}
+        />
+      )}
+
+      {sub.view === "tech" && (
+        <TechAsset
+          devices={devices}
+          startAdding={sub.adding}
+          onClose={() => setSub(grid)}
+          onAdded={(d) => setDevices((list) => [...list, d])}
+          onChanged={(d) => setDevices(replace(d))}
+          onDeleted={(id) => setDevices((list) => list.filter((x) => x.id !== id))}
+        />
+      )}
+
       {sub.view === "journal" && journalVehicle && (
         <VehicleJournal
           vehicle={journalVehicle}
@@ -183,30 +258,26 @@ export function Hub(p: { name: string; demo: boolean; onBack: () => void }) {
 
           <div className="hub" key={mode}>
             {tiles.map((t, i) => {
-              const mobility = mode === "value" && t.title === "Mobilität" && !p.demo;
-              const owned = mobility && vehicles.length > 0;
+              const c = mode === "value" && !p.demo ? categories[t.title] : undefined;
+              const owned = !!c?.open;
               return (
                 <div key={t.title} className={`card card--cat card--c${i}`}>
                   <span className="card__title">{t.title}</span>
                   <Icon name={t.icon} className="card__icon" />
-                  {owned && (
-                    <button
-                      className="card__open"
-                      onClick={() => setSub({ view: "asset", id: vehicles[0]!.id })}
-                      aria-label="Fahrzeuge anzeigen"
-                    >
-                      {formatCents(total)}
+                  {c?.open && (
+                    <button className="card__open" onClick={c.open} aria-label={c.label}>
+                      {formatCents(c.total)}
                     </button>
                   )}
                   <button
                     className={`card__add ${owned ? "card__add--corner" : ""}`}
-                    disabled={!mobility}
-                    onClick={() => setSub({ view: "wizard" })}
-                    aria-label={mobility ? "Neues Fahrzeug hinzufügen" : "Hinzufügen"}
-                    title={mobility ? undefined : "Noch nicht verfügbar"}
+                    disabled={!c}
+                    onClick={c?.add}
+                    aria-label={c ? c.tip : "Hinzufügen"}
+                    title={c ? undefined : "Noch nicht verfügbar"}
                   >
                     <Icon name="plus" />
-                    {mobility && <span className="card__tip">Neues Fahrzeug hinzufügen</span>}
+                    {c && <span className="card__tip">{c.tip}</span>}
                   </button>
                 </div>
               );

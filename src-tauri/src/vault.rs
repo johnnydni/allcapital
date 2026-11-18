@@ -6,6 +6,8 @@
 //! be read – by anyone, including us. There is no recovery.
 
 use crate::storage::write_private;
+use crate::devices::Device;
+use crate::properties::Property;
 use crate::vehicles::Vehicle;
 use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
@@ -24,6 +26,10 @@ pub type VaultKey = Zeroizing<[u8; 32]>;
 pub struct VaultData {
     #[serde(default)]
     pub vehicles: Vec<Vehicle>,
+    #[serde(default)]
+    pub properties: Vec<Property>,
+    #[serde(default)]
+    pub devices: Vec<Device>,
 }
 
 pub struct Vault {

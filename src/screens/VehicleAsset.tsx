@@ -2,37 +2,12 @@ import { useState, type FormEvent } from "react";
 import { api, errorMessage, type Vehicle } from "../lib/api";
 import { formatCents, parseMoney } from "../lib/money";
 import { currentValue, serviceText, valueChange } from "../lib/vehicles";
+import { AssetChrome, AssetToolbar, ChangeBadge, ValueChart } from "../components/AssetParts";
 import carIcon from "../assets/car-icon.png";
-import close from "../assets/close.png";
 import edit from "../assets/edit.png";
-import help from "../assets/help.png";
 import journal from "../assets/journal.png";
 import car from "../assets/kind-car.png";
 import leaf from "../assets/leaf.png";
-import plus from "../assets/plus.png";
-
-const TOOLS = [
-  { id: "journal", label: "Auto-Tagebuch", img: journal },
-  { id: "tool", label: "Neues Tool", img: plus },
-  { id: "expense", label: "", img: plus },
-  { id: "sell", label: "Fahrzeug verkaufen", img: carIcon },
-  { id: "eco", label: "Nachhaltigkeit", img: leaf },
-];
-
-const CHART = { x0: 0, x1: 184, y0: 6, y1: 196 };
-
-/** Maps the value history onto the chart box. One point becomes a flat line. */
-function chartPoints(v: Vehicle): [number, number][] {
-  const values = v.history.map((h) => h.cents);
-  const series = values.length === 1 ? [values[0]!, values[0]!] : values;
-  const min = Math.min(...series);
-  const max = Math.max(...series);
-  const span = max - min || 1;
-  return series.map((cents, i) => [
-    CHART.x0 + ((CHART.x1 - CHART.x0) * i) / (series.length - 1),
-    max === min ? (CHART.y0 + CHART.y1) / 2 : CHART.y1 - ((cents - min) / span) * (CHART.y1 - CHART.y0),
-  ]);
-}
 
 /** Figma frame "Mobilität Preview Overlay": one vehicle with its value history. */
 export function VehicleAsset(p: {
@@ -44,7 +19,6 @@ export function VehicleAsset(p: {
   onOpenJournal: () => void;
   onClose: () => void;
 }) {
-  const [hover, setHover] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [input, setInput] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -57,10 +31,6 @@ export function VehicleAsset(p: {
   const value = currentValue(vehicle);
   const change = valueChange(vehicle);
   const down = change !== null && change < 0;
-  const tone = down ? "down" : "up";
-  const points = chartPoints(vehicle);
-  const last = points[points.length - 1]!;
-  const hoverLabel = TOOLS.find((t) => t.id === hover)?.label;
 
   async function saveValue(e: FormEvent) {
     e.preventDefault();
@@ -87,44 +57,18 @@ export function VehicleAsset(p: {
 
   return (
     <div className="va">
-      <div className="va__bar" onMouseLeave={() => setHover(null)}>
-        {TOOLS.map((t) => (
-          <button
-            key={t.id}
-            className={`va__tool va__tool--${t.id}`}
-            aria-disabled={t.id !== "journal"}
-            aria-label={t.label || "Weitere Aktion"}
-            title={t.id === "journal" ? undefined : "Noch nicht verfügbar"}
-            onClick={t.id === "journal" ? p.onOpenJournal : undefined}
-            onMouseEnter={() => setHover(t.id)}
-            onFocus={() => setHover(t.id)}
-            onBlur={() => setHover(null)}
-          >
-            <img src={t.img} alt="" />
-          </button>
-        ))}
-        {hoverLabel ? <span className="va__barlabel">{hoverLabel}</span> : <img className="va__help" src={help} alt="" />}
-      </div>
-
-      <button className="va__close" onClick={p.onClose} aria-label="Schließen">
-        <img src={close} alt="" />
-      </button>
-      <div className="va__pro" title="Noch nicht verfügbar">
-        <img src={plus} alt="" />
-        <span>PRO</span>
-      </div>
-
-      <div className="va__card" />
+      <AssetToolbar
+        tools={[
+          { id: "journal", label: "Auto-Tagebuch", color: "#ebebeb", img: journal, onClick: p.onOpenJournal },
+          { id: "tool", label: "Neues Tool", color: "#8dc6ef" },
+          { id: "expense", label: "", color: "#ee8d8d" },
+          { id: "sell", label: "Fahrzeug verkaufen", color: "#c5fcc7", img: carIcon },
+          { id: "eco", label: "Nachhaltigkeit", color: "none", img: leaf },
+        ]}
+      />
+      <AssetChrome onClose={p.onClose} />
       <h2 className="va__title">Mobilität</h2>
-      {change !== null && (
-        <p className={`va__change va__change--${tone}`}>
-          <i />
-          {new Intl.NumberFormat("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(
-            Math.abs(change) * 100,
-          )}
-          %
-        </p>
-      )}
+      <ChangeBadge change={change} />
       <img className="va__caricon" src={carIcon} alt="" />
       {editing ? (
         <form className="va__valueform" onSubmit={saveValue}>
@@ -143,13 +87,7 @@ export function VehicleAsset(p: {
         <p className="va__value">{formatCents(value)}</p>
       )}
 
-      <svg className={`va__chart va__chart--${tone}`} viewBox="-8 0 204 204" aria-hidden="true">
-        <path className="va__axis" d="M0 0V200H202" />
-        <path className="va__marker" d={`M${last[0]} 0V200`} />
-        <polyline points={points.map((pt) => pt.join(",")).join(" ")} />
-        <circle cx={last[0]} cy={last[1]} r="10" />
-      </svg>
-      <p className={`va__chartlabel va__change--${tone}`}>{formatCents(value)}</p>
+      <ValueChart values={vehicle.history.map((h) => h.cents)} down={down} />
 
       {vehicle.monthlyDepreciationCents !== null && vehicle.monthlyDepreciationCents > 0 && (
         <>

@@ -41,6 +41,8 @@ Für die Weitergabe an andere muss das Ergebnis mit einer Apple Developer ID sig
 - `src-tauri/src/profiles.rs` – lokale Profile, Argon2id-Passwort-Hashing, atomare Speicherung.
 - `src-tauri/src/vault.rs` – verschlüsselter Datentresor je Profil (XChaCha20-Poly1305).
 - `src-tauri/src/vehicles.rs` – Fahrzeuge, Validierung und die Wert-Faustformel.
+- `src-tauri/src/properties.rs` – Immobilien und die lineare AfA nach § 7 Abs. 4 EStG (nur vermietete Objekte).
+- `src-tauri/src/devices.rs` – Tech-Geräte und ihre Wert-Faustformel.
 - `src-tauri/src/commands.rs` – alle vom Webview erreichbaren Befehle, Sitzung, Login-Drosselung.
 
 ## Sicherheit
